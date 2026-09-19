@@ -1,8 +1,9 @@
 """Application configuration.
 
 Reads settings from environment variables (optionally loaded from a .env file).
-``JWT_SECRET_KEY`` is required: the app refuses to boot without it so a
-deployment can never silently fall back to a known, forgeable JWT signing key.
+``DATABASE_URL`` and ``JWT_SECRET_KEY`` are required: the app refuses to boot
+without them so a deployment can never silently fall back to an unconfigured
+database or a known, forgeable JWT signing key.
 """
 
 import os
@@ -19,51 +20,9 @@ _DEV_SECRET = "dev-secret-key-change-me-in-production"
 # example without an edited secret fails closed instead of signing with it.
 _PLACEHOLDER_SECRETS = {_DEV_SECRET, "CHANGE_ME"}
 
-# Absolute path of the project root (the directory containing app/).
-# Relative SQLite file paths are resolved against this, not the process
-# working directory, so the dev database always lands in the same place no
-# matter where uvicorn/pytest is launched from.
+# Absolute path of the project root (the directory containing app/). Used to
+# locate the Alembic migration scripts at startup.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-_SQLITE_DEFAULT = "sqlite:///./ecommerce.db"
-
-
-def _resolve_database_url(url: str) -> str:
-    """Resolve a relative SQLite file URL against PROJECT_ROOT.
-
-    sqlite:///./ecommerce.db and sqlite:///sub/dev.db are project-relative.
-    Absolute paths (sqlite:////tmp/x.db), :memory:, and non-SQLite URLs are
-    returned unchanged.
-    """
-    if not url.startswith("sqlite:"):
-        return url
-    if ":memory:" in url:
-        return url
-    parts = urlsplit(url)
-    if parts.path.startswith("//"):
-        return url  # already absolute (four-slash form)
-    relative = (parts.netloc + parts.path).lstrip("/")
-    # urlsplit puts the "." host of sqlite:///./f.db into netloc.
-    if relative.startswith("./"):
-        relative = relative[2:]
-    if not relative or relative == ".":
-        return url
-    absolute = (PROJECT_ROOT / relative).as_posix()
-    return f"sqlite:///{absolute}"
-
-
-def _default_auto_create_tables() -> bool:
-    explicit = _getenv("AUTO_CREATE_TABLES", "")
-    if explicit:
-        return explicit.lower() in ("1", "true", "yes")
-    # Default to creating tables on startup for every database (SQLite dev and
-    # managed Postgres/Neon alike), so a fresh database "just works" with no
-    # .env changes. Serverless (Vercel) is the exception: static-filesystem
-    # and multi-instance concerns make runtime DDL inappropriate, so there it
-    # stays opt-in via AUTO_CREATE_TABLES=1/true.
-    if os.getenv("VERCEL"):
-        return False
-    return True
 
 
 def _getenv(name: str, default: str) -> str:
@@ -134,7 +93,7 @@ class Settings:
     api_prefix: str = field(default_factory=lambda: _getenv("API_PREFIX", "/api"))
 
     database_url: str = field(
-        default_factory=lambda: _getenv("DATABASE_URL", _SQLITE_DEFAULT)
+        default_factory=lambda: _getenv("DATABASE_URL", "")
     )
     secret_key: str = field(default_factory=_secret_key_value)
     algorithm: str = field(default_factory=_algorithm_value)
@@ -160,32 +119,28 @@ class Settings:
             "CHANGE_PASSWORD_RATE_LIMIT_PER_MINUTE", 10, minimum=1
         )
     )
-    # Zero-setup behaviour: tables are created on startup for any database
-    # (SQLite and Postgres/Neon) unless EXPLICITLY disabled with
-    # AUTO_CREATE_TABLES=0/false, or when running on Vercel (serverless),
-    # where DDL at runtime is disabled unless AUTO_CREATE_TABLES=1/true.
-    # Production teams that manage schema with Alembic can disable it here.
-    auto_create_tables: bool = field(
-        default_factory=_default_auto_create_tables
-    )
 
     def __post_init__(self) -> None:
-        # Frozen dataclass: normalize the URL once, at construction.
-        object.__setattr__(
-            self, "database_url", _resolve_database_url(self.database_url)
-        )
+        if not self.database_url:
+            raise RuntimeError(
+                "DATABASE_URL is required. Copy .env.example to .env and set "
+                "it to a PostgreSQL URL, e.g. "
+                "DATABASE_URL=postgresql://user:pass@host:5432/shop"
+            )
+        db_scheme = urlsplit(self.database_url).scheme
+        if (
+            db_scheme not in ("postgres", "postgresql")
+            and not db_scheme.startswith(("postgres+", "postgresql+"))
+        ):
+            raise RuntimeError(
+                "Only Postgres is supported; SQLite and other databases are "
+                "not. Set DATABASE_URL to a postgresql:// URL."
+            )
         if not self.secret_key or self.secret_key in _PLACEHOLDER_SECRETS:
             raise RuntimeError(
                 "JWT_SECRET_KEY (or SECRET_KEY) is required and must not be "
                 "a known default or placeholder. Generate one with: "
                 "python -c \"import secrets; print(secrets.token_urlsafe(48))\""
-            )
-        if os.getenv("VERCEL") and self.database_url.startswith("sqlite"):
-            raise RuntimeError(
-                "SQLite cannot be used on Vercel (read-only, ephemeral "
-                "filesystem). Set DATABASE_URL to a managed Postgres "
-                "database, e.g. "
-                "DATABASE_URL=postgresql://user:pass@host:5432/shop"
             )
 
 

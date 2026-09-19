@@ -12,7 +12,8 @@ Safe to re-run: existing users/categories are left untouched.
 
 from decimal import Decimal
 
-from app.database import Base, SessionLocal, engine
+from app.database import SessionLocal
+from app.main import run_migrations
 from app.models.category import Category
 from app.models.product import Product
 from app.models.user import User
@@ -39,7 +40,7 @@ DEMO_PRODUCTS = [
 
 
 def seed() -> None:
-    Base.metadata.create_all(bind=engine)
+    run_migrations()  # tables come from Alembic migrations, not create_all
 
     with SessionLocal() as db:
         admin = db.query(User).filter(User.email == DEMO_ADMIN_EMAIL).first()

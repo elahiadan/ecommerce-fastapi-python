@@ -1,7 +1,7 @@
 """Model re-exports.
 
 Importing this module registers every model on ``Base.metadata`` so that
-``create_all`` / ``drop_all`` know about all tables.
+Alembic autogenerate and ``create_all`` / ``drop_all`` know about all tables.
 """
 
 from app.models.category import Category

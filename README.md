@@ -15,7 +15,7 @@ and a real test suite.
   computed average rating & count on the product detail endpoint
 - **Role-based permissions**: 403 for non-admins on write routes; users only
   see their own orders; admins moderate reviews and update order status
-- Switcheable database: SQLite out of the box, Postgres via a `DATABASE_URL` env var
+- PostgreSQL-only via a `DATABASE_URL` env var; schema managed by Alembic migrations that run automatically at startup
 - ✔ **Local pytest suite** exercising auth, permissions, stock validation, and review rules (kept out of this repository)
 
 ## 🛠 Tech Stack
@@ -26,9 +26,10 @@ and a real test suite.
 | ORM          | SQLAlchemy `2.0.35`          | `Mapped`/`mapped_column` typing        |
 | Validation   | Pydantic `2.9.2`             | request/response schemas               |
 | Auth         | `python-jose` + `passlib`    | HS256 JWT + bcrypt hashing             |
-| Database     | SQLite (dev) / Postgres        | Postgres via `DATABASE_URL` + bundled `psycopg2-binary` driver |
+| Database     | PostgreSQL                 | Postgres via `DATABASE_URL` + bundled `psycopg2-binary` driver |
+| Migrations   | Alembic `1.13.4`           | run automatically at startup (code-built config, no `alembic.ini`) |
 | Server       | Uvicorn                       | `uvicorn app.main:app --reload`        |
-| Testing      | pytest + FastAPI TestClient  | local-only suite, in-memory SQLite (`StaticPool`), not shipped |
+| Testing      | pytest + FastAPI TestClient  | local-only suite against Postgres (isolated schema), not shipped |
 | Deploy       | Docker (python:3.12-slim)    | `docker build . && docker run`         |
 
 ## 📂 Project Structure
@@ -36,7 +37,7 @@ and a real test suite.
 ```
 .
 ├── app/
-│   ├── main.py               # FastAPI app, router registration, create_all
+│   ├── main.py               # FastAPI app, router registration, runs migrations at startup
 │   ├── config.py             # env-based settings (DATABASE_URL, JWT_SECRET_KEY, ...)
 │   ├── database.py           # engine / session / Base / get_db
 │   ├── security.py           # bcrypt hashing + JWT encode/decode
@@ -63,6 +64,10 @@ and a real test suite.
 │       ├── product.py        # /api/products
 │       ├── order.py          # /api/orders
 │       └── review.py         # /api/reviews
+├── alembic/                  # Alembic migration scripts
+│   ├── env.py
+│   ├── script.py.mako        # template for new migrations
+│   └── versions/             # e.g. 8799f11a754a_create_initial_tables.py
 ├── requirements.txt          # pinned versions
 ├── Dockerfile
 └── .env.example
@@ -78,12 +83,18 @@ source venv/bin/activate
 # 2. Install pinned dependencies
 pip install -r requirements.txt
 
-# 3. Configure env — copy `.env.example` to `.env` and set JWT_SECRET_KEY (it
-#    is REQUIRED — the app refuses to boot without it and rejects the known
-#    dev default/placeholders). Generate one with:
+# 3. Configure env — copy `.env.example` to `.env`. `DATABASE_URL` (a
+#    PostgreSQL URL) and `JWT_SECRET_KEY` are REQUIRED — the app refuses to
+#    boot without them and rejects the known dev default/placeholders.
+#    Generate a secret with:
 #    python -c "import secrets; print(secrets.token_urlsafe(48))"
 #    (Shell alternative:
 #    export JWT_SECRET_KEY="$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")")
+
+# 3b. Migrations run automatically at startup; to run them manually first:
+#     python -c "from alembic import command; from alembic.config import Config; \
+#     c=Config(); c.set_main_option('script_location','alembic'); \
+#     c.set_main_option('sqlalchemy.url', '$DATABASE_URL'); command.upgrade(c,'head')"
 
 # 4. (Optional) seed a demo admin + catalogue
 python -m app.seed
@@ -105,13 +116,15 @@ docker run -p 8000:8000 -e JWT_SECRET_KEY="$(python3 -c 'import secrets; print(s
 ### Run the tests
 
 The pytest suite is intentionally kept **out of this repository**. If you have a
-local checkout containing `tests/`, just run:
+local checkout containing `tests/`, run:
 
 ```bash
 pytest            # or: pytest -v
 ```
 
 Right after cloning, `pytest` will find no test cases — that is expected.
+Tests run against the PostgreSQL server in `DATABASE_URL` and isolate each test
+inside a throwaway schema, so they never touch real tables.
 
 ## 🧪 Business Rules
 
@@ -231,7 +244,7 @@ curl -s -X PATCH $BASE/api/orders/1/status \
   product and validated against stock *before* anything is mutated. If any
   line is invalid, the whole request returns `400` and **no** product is
   decremented. Writes happen in a single transaction; `SELECT … FOR UPDATE`
-  locks rows on Postgres for safe concurrent checkout (SQLite ignores it).
+  locks rows on Postgres for safe concurrent checkout.
 - **Price snapshotting.** `OrderItem.price_at_purchase` records the price at
   order time; later price changes never rewrite historical orders.
 - **One review per user per product** is enforced as a DB
@@ -240,11 +253,11 @@ curl -s -X PATCH $BASE/api/orders/1/status \
 - **Ownership.** Users see only their own orders (others get `404`). Users may
   update/delete only their own reviews; admins can delete any review.
 
-## 🗄️ Swapping SQLite → Postgres
+## 🗄️ Database & Migrations
 
-The app reads `DATABASE_URL` once at startup. A plain `postgresql://` URL uses
-the bundled `psycopg2-binary` driver (already in `requirements.txt`), so
-switching is just a matter of setting the variable:
+The app is Postgres-only: `DATABASE_URL` is read once at startup. A plain
+`postgresql://` URL uses the bundled `psycopg2-binary` driver (already in
+`requirements.txt`).
 
 ```bash
 export DATABASE_URL="postgresql://shop:secret@localhost:5432/shop"
@@ -252,25 +265,29 @@ export JWT_SECRET_KEY="$(python3 -c "import secrets; print(secrets.token_urlsafe
 uvicorn app.main:app
 ```
 
-`create_all` runs at startup for any database by default (SQLite or Postgres),
-so a fresh database works with zero setup. Disable it with
-`AUTO_CREATE_TABLES=false` when you manage schema with
-[Alembic](https://alembic.sqlalchemy.org/) migrations.
+Schema changes live in `alembic/versions/`. The app applies them on startup
+(and `app/seed.py` runs them too). To autogenerate a new revision:
+
+```bash
+python -c "from alembic import command; from alembic.config import Config; \
+c=Config(); c.set_main_option('script_location','alembic'); \
+c.set_main_option('sqlalchemy.url', '$DATABASE_URL'); \
+command.revision(c,'describe change',autogenerate=True)"
+```
+
+On a fresh database the initial migration creates all tables on first boot, so
+deploys self-configure with no extra step. Later boots are idempotent no-ops.
 
 ### Deploying to Vercel (serverless)
 
-SQLite does not work there — the filesystem is read-only (except `/tmp`)
-and ephemeral per instance — so the app refuses to boot with a SQLite URL
-when the `VERCEL` env var is present. Set these in
-**Project → Settings → Environment Variables**, then redeploy:
+Set these in **Project → Settings → Environment Variables**, then redeploy:
 
 - `JWT_SECRET_KEY` — required (generate: `python -c "import secrets;
   print(secrets.token_urlsafe(48))"`)
 - `DATABASE_URL` — a managed Postgres URL, e.g.
   `postgresql://user:pass@host:5432/shop`
-  (`psycopg2-binary` is already in `requirements.txt`; on Vercel set
-  `AUTO_CREATE_TABLES=true` to have the tables created at startup, or run
-  migrations first)
+  (`psycopg2-binary` is already in `requirements.txt`; Alembic migrations run
+  automatically at startup, creating the tables on the first cold start)
 
 Notes: empty-string env values are treated as unset (Vercel injects `""`
 for blank variables); `ACCESS_TOKEN_EXPIRE_MINUTES` must be an integer ≥ 1.

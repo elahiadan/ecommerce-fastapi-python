@@ -29,8 +29,7 @@ def _escape_like(term: str) -> str:
     """Escape LIKE metacharacters so `search` matches literally.
 
     Without this, a search for "%" returns the whole catalogue and "_" acts
-    as a single-character wildcard (with subtly different escaping rules on
-    SQLite vs Postgres).
+    as a single-character wildcard.
     """
     return (
         term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -39,8 +38,8 @@ def _escape_like(term: str) -> str:
 
 def _finite_or_none(value: float | None) -> float | None:
     # NaN/Infinity would otherwise reach the Numeric comparison, where the
-    # Postgres driver raises instead of filtering (SQLite silently returns
-    # nothing). Validate at the boundary so the client gets a 422, not a 500.
+    # Postgres driver raises instead of filtering. Validate at the boundary
+    # so the client gets a 422, not a 500.
     if value is not None and not math.isfinite(value):
         raise ValueError("must be a finite number")
     return value

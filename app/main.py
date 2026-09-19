@@ -7,23 +7,31 @@ Run locally with:
 
 from contextlib import asynccontextmanager
 
+from alembic import command
+from alembic.config import Config
 from fastapi import FastAPI
 
-from app.config import settings
-from app.database import Base, engine
-from app.models import Category, Order, OrderItem, Product, Review, User  # noqa: F401
+from app.config import PROJECT_ROOT, settings
 from app.routers import auth, category, order, product, review, user
+
+
+def run_migrations() -> None:
+    """Apply pending Alembic migrations to the configured database.
+
+    Runs at every startup, so a first cold start on a fresh database creates
+    the schema automatically; later boots are idempotent no-ops at head.
+
+    The Alembic configuration is built in code (no ``alembic.ini``).
+    """
+    config = Config()
+    config.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", settings.database_url)
+    command.upgrade(config, "head")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Tables are created at startup — never at import — so a cold start on a
-    # read-only/ephemeral filesystem (or a misconfigured DATABASE_URL) fails
-    # here with a clear error instead of "could not import app/main.py".
-    # Only enabled for local SQLite dev (or explicit AUTO_CREATE_TABLES=1);
-    # shared databases must be migrated with Alembic.
-    if settings.auto_create_tables:
-        Base.metadata.create_all(bind=engine)
+    run_migrations()
     yield
 
 

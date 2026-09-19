@@ -5,8 +5,8 @@ available stock BEFORE any quantity is decremented. If any line exceeds stock
 the whole request is rejected and nothing is mutated (no partial decrements).
 
 Decrements are performed with an atomic conditional ``UPDATE ... WHERE
-stock >= quantity`` — on Postgres and SQLite alike — so a concurrent order can
-never oversell the same stock between the check and the write.
+stock >= quantity``, so a concurrent order can never oversell the same stock
+between the check and the write.
 """
 
 from decimal import Decimal
@@ -42,7 +42,7 @@ def _get_order_with_items(
     """Load an order with its line items and products eager-loaded so response
     serialization never triggers an N+1 of lazy queries. Pass for_update=True
     when the caller is about to change the row, so concurrent status updates
-    stay serialized (Postgres; ignored on SQLite)."""
+    stay serialized."""
     query = (
         db.query(Order)
         .options(selectinload(Order.items).selectinload(OrderItem.product))
@@ -231,11 +231,10 @@ def update_order_status(
                     ),
                 )
 
-    # Serialize the transition in the database on every backend: the UPDATE
-    # only matches a row that is still in the status we read, so a concurrent
-    # request that already moved this order wins and this one is rejected with
-    # a clean 409 instead of restocking twice (this is the SQLite-safe
-    # counterpart to SELECT ... FOR UPDATE, which SQLite ignores).
+    # Serialize the transition in the database: the UPDATE only matches a row
+    # that is still in the status we read, so a concurrent request that already
+    # moved this order wins and this one is rejected with a clean 409 instead
+    # of restocking twice.
     transition = db.execute(
         sa_update(Order)
         .where(Order.id == order.id, Order.status == order.status)
