@@ -57,12 +57,12 @@ and a real test suite.
 │   │   ├── order.py
 │   │   └── review.py
 │   └── routers/              # API routers, one file per entity
-│       ├── auth.py           # /auth/register, /auth/login, /auth/me
-│       ├── user.py           # /users (admin)
-│       ├── category.py       # /categories
-│       ├── product.py        # /products
-│       ├── order.py          # /orders
-│       └── review.py         # /reviews
+│       ├── auth.py           # /api/auth/register, /api/auth/login, /api/auth/me
+│       ├── user.py           # /api/users (admin)
+│       ├── category.py       # /api/categories
+│       ├── product.py        # /api/products
+│       ├── order.py          # /api/orders
+│       └── review.py         # /api/reviews
 ├── requirements.txt          # pinned versions
 ├── Dockerfile
 └── .env.example
@@ -131,45 +131,50 @@ this repository** (see *Run the tests*):
 
 ## 🔌 API Endpoints
 
+> All business routes are served under the `API_PREFIX` configured in `.env`
+> (default `/api`), so endpoint URLs read `/api/auth/...`, `/api/products/...`
+> and so on. The meta routes `GET /` and `GET /health` stay at the root so
+> health checks and docs do not depend on the API prefix.
+
 ### Authentication / Users
 
 | Method | Endpoint           | Auth  | Description                                      |
 |--------|--------------------|-------|--------------------------------------------------|
-| POST   | `/auth/register`   | –     | Create an account, returns the user (201)        |
-| POST   | `/auth/login`      | –     | OAuth2 form (`username` + `password`), returns JWT |
-| GET    | `/auth/me`         | user  | Current authenticated user                       |
-| POST   | `/auth/change-password` | user | Change password (`current_password` + `new_password`), invalidates all existing tokens (204) |
-| GET    | `/users/`          | admin | List all users                                   |
-| GET    | `/users/{id}`      | user  | Own profile (admin: anyone)                      |
+| POST   | `/api/auth/register`   | –     | Create an account, returns the user (201)        |
+| POST   | `/api/auth/login`      | –     | OAuth2 form (`username` + `password`), returns JWT |
+| GET    | `/api/auth/me`         | user  | Current authenticated user                       |
+| POST   | `/api/auth/change-password` | user | Change password (`current_password` + `new_password`), invalidates all existing tokens (204) |
+| GET    | `/api/users/`          | admin | List all users                                   |
+| GET    | `/api/users/{id}`      | user  | Own profile (admin: anyone)                      |
 
 ### Catalogue
 
 | Method | Endpoint                    | Auth  | Description                                      |
 |--------|-----------------------------|-------|--------------------------------------------------|
-| GET    | `/categories/`               | –     | List categories                                   |
-| POST   | `/categories/`               | admin | Create category                                   |
-| GET    | `/categories/{id}`           | –     | Get category                                     |
-| GET    | `/categories/{id}/products`  | –     | Products in a category                            |
-| PATCH  | `/categories/{id}`           | admin | Update category                                   |
-| DELETE | `/categories/{id}`           | admin | Delete category (409 if it has products)          |
-| GET    | `/products/`                 | –     | List products (`category_id`, `search`, `min_price`, `max_price`, `skip`, `limit`) |
-| POST   | `/products/`                 | admin | Create product                                    |
-| GET    | `/products/{id}`             | –     | Product detail + `average_rating`, `review_count`, `reviews` |
-| PATCH  | `/products/{id}`             | admin | Update product                                    |
-| DELETE | `/products/{id}`             | admin | Delete product                                    |
+| GET    | `/api/categories/`               | –     | List categories                                   |
+| POST   | `/api/categories/`               | admin | Create category                                   |
+| GET    | `/api/categories/{id}`           | –     | Get category                                     |
+| GET    | `/api/categories/{id}/products`  | –     | Products in a category                            |
+| PATCH  | `/api/categories/{id}`           | admin | Update category                                   |
+| DELETE | `/api/categories/{id}`           | admin | Delete category (409 if it has products)          |
+| GET    | `/api/products/`                 | –     | List products (`category_id`, `search`, `min_price`, `max_price`, `skip`, `limit`) |
+| POST   | `/api/products/`                 | admin | Create product                                    |
+| GET    | `/api/products/{id}`             | –     | Product detail + `average_rating`, `review_count`, `reviews` |
+| PATCH  | `/api/products/{id}`             | admin | Update product                                    |
+| DELETE | `/api/products/{id}`             | admin | Delete product                                    |
 
 ### Orders & Reviews
 
 | Method | Endpoint                  | Auth  | Description                                      |
 |--------|---------------------------|-------|--------------------------------------------------|
-| POST   | `/orders/`                | user  | Place an order (items with `product_id` + `quantity`) |
-| GET    | `/orders/`                | user  | Own orders (admin: all orders)                   |
-| GET    | `/orders/{id}`            | user  | Own order (admin: any; others get 404)           |
-| PATCH  | `/orders/{id}/status`     | admin | Set status: `pending/paid/shipped/delivered/cancelled` |
-| POST   | `/reviews/`               | user  | Review a product (`product_id`, `rating` 1–5, `comment?`) |
-| GET    | `/reviews/`               | –     | List reviews (`product_id` filter)               |
-| PATCH  | `/reviews/{id}`           | user  | Edit own review                                  |
-| DELETE | `/reviews/{id}`           | user  | Delete own review (admin: any)                   |
+| POST   | `/api/orders/`                | user  | Place an order (items with `product_id` + `quantity`) |
+| GET    | `/api/orders/`                | user  | Own orders (admin: all orders)                   |
+| GET    | `/api/orders/{id}`            | user  | Own order (admin: any; others get 404)           |
+| PATCH  | `/api/orders/{id}/status`     | admin | Set status: `pending/paid/shipped/delivered/cancelled` |
+| POST   | `/api/reviews/`               | user  | Review a product (`product_id`, `rating` 1–5, `comment?`) |
+| GET    | `/api/reviews/`               | –     | List reviews (`product_id` filter)               |
+| PATCH  | `/api/reviews/{id}`           | user  | Edit own review                                  |
+| DELETE | `/api/reviews/{id}`           | user  | Delete own review (admin: any)                   |
 
 Meta: `GET /` and `GET /health`.
 
@@ -179,43 +184,43 @@ Meta: `GET /` and `GET /health`.
 BASE=http://127.0.0.1:8000
 
 # --- 1) Register & log in ------------------------------------------------
-curl -s -X POST $BASE/auth/register \
+curl -s -X POST $BASE/api/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email":"alice@example.com","username":"alice","full_name":"Alice","password":"password123"}'
 
-TOKEN=$(curl -s -X POST $BASE/auth/login \
+TOKEN=$(curl -s -X POST $BASE/api/auth/login \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d 'username=alice@example.com&password=password123' | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
 
 # --- 2) Admin: create a category and a product ---------------------------
 # (log in with the seeded admin instead for the admin actions)
-ADMIN_TOKEN=$(curl -s -X POST $BASE/auth/login \
+ADMIN_TOKEN=$(curl -s -X POST $BASE/api/auth/login \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d 'username=admin@example.com&password=admin123' | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
 
-CAT=$(curl -s -X POST $BASE/categories/ \
+CAT=$(curl -s -X POST $BASE/api/categories/ \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
   -d '{"name":"Electronics","description":"Gadgets"}')
 CAT_ID=$(echo "$CAT" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
 
-curl -s -X POST $BASE/products/ \
+curl -s -X POST $BASE/api/products/ \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
   -d "{\"name\":\"Wireless Mouse\",\"price\":29.99,\"stock\":50,\"category_id\":$CAT_ID}"
 
 # --- 3) User: place an order ---------------------------------------------
-curl -s -X POST $BASE/orders/ \
+curl -s -X POST $BASE/api/orders/ \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"items":[{"product_id":1,"quantity":2}]}'
 
 # --- 4) Review the product, then read its rating -------------------------
-curl -s -X POST $BASE/reviews/ \
+curl -s -X POST $BASE/api/reviews/ \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"product_id":1,"rating":5,"comment":"Love it"}'
 
-curl -s $BASE/products/1
+curl -s $BASE/api/products/1
 
 # --- 5) Admin: update order status ---------------------------------------
-curl -s -X PATCH $BASE/orders/1/status \
+curl -s -X PATCH $BASE/api/orders/1/status \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
   -d '{"status":"shipped"}'
 ```
@@ -266,7 +271,7 @@ when the `VERCEL` env var is present. Set these in
 Notes: empty-string env values are treated as unset (Vercel injects `""`
 for blank variables); `ACCESS_TOKEN_EXPIRE_MINUTES` must be an integer ≥ 1.
 The in-process auth rate limiter is per-instance on serverless — also enable
-Vercel's platform rate limiting / firewall for the `/auth/*` routes.
+Vercel's platform rate limiting / firewall for the `/api/auth/*` routes.
 
 ## 🔐 Pinned Dependency Notes
 

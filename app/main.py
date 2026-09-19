@@ -39,12 +39,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.include_router(auth.router)
-app.include_router(user.router)
-app.include_router(category.router)
-app.include_router(product.router)
-app.include_router(order.router)
-app.include_router(review.router)
+# API_PREFIX from the environment (.env: API_PREFIX=/api). All routers are
+# mounted beneath it, so the API lives at /api/auth/..., /api/products/... etc.
+_api_prefix = settings.api_prefix.rstrip("/")
+app.include_router(auth.router, prefix=_api_prefix)
+app.include_router(user.router, prefix=_api_prefix)
+app.include_router(category.router, prefix=_api_prefix)
+app.include_router(product.router, prefix=_api_prefix)
+app.include_router(order.router, prefix=_api_prefix)
+app.include_router(review.router, prefix=_api_prefix)
 
 
 @app.get("/", tags=["Meta"])
