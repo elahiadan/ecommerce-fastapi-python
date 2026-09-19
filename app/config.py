@@ -8,7 +8,6 @@ database or a known, forgeable JWT signing key.
 
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
@@ -19,10 +18,6 @@ _DEV_SECRET = "dev-secret-key-change-me-in-production"
 # Placeholder shipped in .env.example — accepted nowhere, so a copy of the
 # example without an edited secret fails closed instead of signing with it.
 _PLACEHOLDER_SECRETS = {_DEV_SECRET, "CHANGE_ME"}
-
-# Absolute path of the project root (the directory containing app/). Used to
-# locate the Alembic migration scripts at startup.
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _getenv(name: str, default: str) -> str:

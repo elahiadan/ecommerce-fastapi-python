@@ -1,7 +1,7 @@
 """Database engine and session setup.
 
 The app is Postgres-only (managed Postgres/Neon in production). The schema is
-created by Alembic migrations, which run automatically at startup.
+created by Alembic migrations when you run ``alembic upgrade head``.
 """
 
 from sqlalchemy import create_engine

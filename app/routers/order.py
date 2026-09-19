@@ -11,8 +11,9 @@ between the check and the write.
 
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from sqlalchemy import update as sa_update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.database import get_db
@@ -61,9 +62,30 @@ def _get_order_with_items(
 )
 def create_order(
     payload: OrderCreate,
+    response: Response,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    idempotency_key: str | None = Header(
+        default=None, alias="Idempotency-Key", max_length=128
+    ),
 ) -> Order:
+    idempotency_key = (idempotency_key or "").strip() or None
+
+    # A replayed checkout (double-click, client retry) reuses the original
+    # order instead of placing a duplicate and decrementing stock twice.
+    if idempotency_key:
+        existing = (
+            db.query(Order)
+            .filter(
+                Order.user_id == current_user.id,
+                Order.idempotency_key == idempotency_key,
+            )
+            .first()
+        )
+        if existing is not None:
+            response.status_code = status.HTTP_200_OK
+            return _get_order_with_items(db, existing.id)
+
     # Aggregate requested quantities per product so duplicate line items for
     # the same product cannot bypass the stock check.
     requested: dict[int, int] = {}
@@ -105,7 +127,7 @@ def create_order(
             )
 
     # --- Phase 2: create order + items, decrement stock, all in one commit ---
-    order = Order(user_id=current_user.id)
+    order = Order(user_id=current_user.id, idempotency_key=idempotency_key)
     db.add(order)
     db.flush()  # obtain order.id
 
@@ -137,7 +159,33 @@ def create_order(
         )
 
     order.total_amount = total
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Two cases: (1) a concurrent request already placed the same checkout
+        # (unique (user_id, idempotency_key) constraint) -> replay that order;
+        # (2) a product was deleted concurrently while we held its rows ->
+        # friendly 409, never a raw driver 500. Either way nothing was written.
+        db.rollback()
+        if idempotency_key:
+            existing = (
+                db.query(Order)
+                .filter(
+                    Order.user_id == current_user.id,
+                    Order.idempotency_key == idempotency_key,
+                )
+                .first()
+            )
+            if existing is not None:
+                response.status_code = status.HTTP_200_OK
+                return _get_order_with_items(db, existing.id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Order could not be placed because a product changed "
+                "concurrently. Please retry."
+            ),
+        )
     return _get_order_with_items(db, order.id)
 
 

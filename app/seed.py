@@ -1,7 +1,8 @@
 """One-command demo seed: creates an admin user plus sample catalogue.
 
-Run with:
+Run with (after applying migrations):
 
+    alembic upgrade head
     python -m app.seed
 
 Credentials created (unless they already exist):
@@ -13,7 +14,6 @@ Safe to re-run: existing users/categories are left untouched.
 from decimal import Decimal
 
 from app.database import SessionLocal
-from app.main import run_migrations
 from app.models.category import Category
 from app.models.product import Product
 from app.models.user import User
@@ -40,8 +40,6 @@ DEMO_PRODUCTS = [
 
 
 def seed() -> None:
-    run_migrations()  # tables come from Alembic migrations, not create_all
-
     with SessionLocal() as db:
         admin = db.query(User).filter(User.email == DEMO_ADMIN_EMAIL).first()
         if admin is None:

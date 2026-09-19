@@ -17,7 +17,7 @@ class Category(Base):
     )
     description: Mapped[str | None] = mapped_column(String(500), default=None)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
     products: Mapped[list["Product"]] = relationship(

@@ -152,4 +152,13 @@ def delete_category(
             detail="Cannot delete a category that still contains products",
         )
     db.delete(category)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # A product may have been added concurrently between the check above
+        # and the DELETE.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete a category that still contains products",
+        )

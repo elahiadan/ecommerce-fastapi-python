@@ -2,38 +2,16 @@
 
 Run locally with:
 
+    alembic upgrade head
     uvicorn app.main:app --reload
 """
 
-from contextlib import asynccontextmanager
-
-from alembic import command
-from alembic.config import Config
 from fastapi import FastAPI
+from sqlalchemy import text
 
-from app.config import PROJECT_ROOT, settings
+from app.config import settings
+from app.database import engine
 from app.routers import auth, category, order, product, review, user
-
-
-def run_migrations() -> None:
-    """Apply pending Alembic migrations to the configured database.
-
-    Runs at every startup, so a first cold start on a fresh database creates
-    the schema automatically; later boots are idempotent no-ops at head.
-
-    The Alembic configuration is built in code (no ``alembic.ini``).
-    """
-    config = Config()
-    config.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
-    config.set_main_option("sqlalchemy.url", settings.database_url)
-    command.upgrade(config, "head")
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    run_migrations()
-    yield
-
 
 app = FastAPI(
     title=settings.app_name,
@@ -44,7 +22,6 @@ app = FastAPI(
     ),
     version=settings.app_version,
     debug=settings.debug,
-    lifespan=lifespan,
 )
 
 # API_PREFIX from the environment (.env: API_PREFIX=/api). All routers are
@@ -65,4 +42,10 @@ def root() -> dict:
 
 @app.get("/health", tags=["Meta"])
 def health_check() -> dict:
-    return {"status": "ok"}
+    database = "ok"
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception:
+        database = "unavailable"
+    return {"status": "ok", "database": database}

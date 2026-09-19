@@ -48,8 +48,18 @@ class ProductRead(ORMModel):
 
 
 class ProductDetail(ProductRead):
-    """Product plus computed review aggregates for the detail view."""
+    """Product plus computed review aggregates for the detail view.
+
+    ``reviews`` holds only the 5 most recent reviews (the response must stay
+    bounded); ``review_count`` always reflects the full review set.
+    """
 
     average_rating: float | None
     review_count: int
-    reviews: list[ReviewRead] = []
+    reviews: list[ReviewRead] = Field(
+        default_factory=list,
+        description=(
+            "The 5 most recent reviews (newest first). review_count reflects "
+            "every review for the product."
+        ),
+    )

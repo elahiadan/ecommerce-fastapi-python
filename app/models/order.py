@@ -10,6 +10,8 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Numeric,
+    String,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -32,10 +34,23 @@ def _enum_values(enum_class) -> list[str]:
 
 class Order(Base):
     __tablename__ = "orders"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "idempotency_key",
+            name="uq_orders_user_idempotency",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id"), index=True, nullable=False
+    )
+    # Client-supplied checkout idempotency key (one per user): a retried or
+    # double-submitted request with the same key reuses the original order
+    # instead of placing a duplicate.
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(128), default=None
     )
     status: Mapped[OrderStatus] = mapped_column(
         SQLEnum(
@@ -50,7 +65,7 @@ class Order(Base):
         Numeric(10, 2), default=Decimal("0.00")
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
     user: Mapped["User"] = relationship(back_populates="orders")

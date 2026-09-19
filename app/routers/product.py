@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BeforeValidator
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.database import get_db
@@ -64,7 +65,15 @@ def create_product(
 
     product = Product(**payload.model_dump())
     db.add(product)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Category deleted between the check above and the INSERT.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Category does not exist",
+        )
     db.refresh(product)
     return product
 
@@ -185,4 +194,13 @@ def delete_product(
             detail="Cannot delete a product that has been ordered",
         )
     db.delete(product)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # An order for this product may have been committed concurrently
+        # between the existence check above and the DELETE.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete a product that has been ordered",
+        )

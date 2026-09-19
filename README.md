@@ -15,7 +15,7 @@ and a real test suite.
   computed average rating & count on the product detail endpoint
 - **Role-based permissions**: 403 for non-admins on write routes; users only
   see their own orders; admins moderate reviews and update order status
-- PostgreSQL-only via a `DATABASE_URL` env var; schema managed by Alembic migrations that run automatically at startup
+- PostgreSQL-only via a `DATABASE_URL` env var; schema managed by Alembic migrations (`alembic upgrade head`)
 - ✔ **Local pytest suite** exercising auth, permissions, stock validation, and review rules (kept out of this repository)
 
 ## 🛠 Tech Stack
@@ -27,22 +27,22 @@ and a real test suite.
 | Validation   | Pydantic `2.9.2`             | request/response schemas               |
 | Auth         | `python-jose` + `passlib`    | HS256 JWT + bcrypt hashing             |
 | Database     | PostgreSQL                 | Postgres via `DATABASE_URL` + bundled `psycopg2-binary` driver |
-| Migrations   | Alembic `1.13.4`           | run automatically at startup (code-built config, no `alembic.ini`) |
+| Migrations   | Alembic `1.13.4`           | `alembic upgrade head` via CLI, `docker compose up`, or `docker compose --profile local up` |
 | Server       | Uvicorn                       | `uvicorn app.main:app --reload`        |
 | Testing      | pytest + FastAPI TestClient  | local-only suite against Postgres (isolated schema), not shipped |
-| Deploy       | Docker (python:3.12-slim)    | `docker build . && docker run`         |
+| Deploy       | Docker + docker-compose   | `docker compose --profile local up` (app + Postgres) |
 
 ## 📂 Project Structure
 
 ```
 .
 ├── app/
-│   ├── main.py               # FastAPI app, router registration, runs migrations at startup
+│   ├── main.py               # FastAPI app, router registration, health check
 │   ├── config.py             # env-based settings (DATABASE_URL, JWT_SECRET_KEY, ...)
 │   ├── database.py           # engine / session / Base / get_db
 │   ├── security.py           # bcrypt hashing + JWT encode/decode
 │   ├── dependencies.py       # get_current_user, require_admin
-│   ├── seed.py               # demo data seeder (python -m app.seed)
+│   ├── seed.py               # demo data seeder (alembic upgrade head first, then python -m app.seed)
 │   ├── models/               # SQLAlchemy ORM models, one file per entity
 │   │   ├── user.py
 │   │   ├── category.py
@@ -64,12 +64,15 @@ and a real test suite.
 │       ├── product.py        # /api/products
 │       ├── order.py          # /api/orders
 │       └── review.py         # /api/reviews
-├── alembic/                  # Alembic migration scripts
-│   ├── env.py
+├── alembic/
+│   ├── env.py                # reads sqlalchemy.url from Settings (app/config.py)
 │   ├── script.py.mako        # template for new migrations
-│   └── versions/             # e.g. 8799f11a754a_create_initial_tables.py
+│   └── versions/             # e.g. 0001_create_ecommerce_tables.py
+├── alembic.ini               # Alembic CLI config (script_location = alembic)
 ├── requirements.txt          # pinned versions
 ├── Dockerfile
+├── docker-compose.yml        # api + optional local Postgres (--profile local)
+├── .dockerignore
 └── .env.example
 ```
 
@@ -91,10 +94,9 @@ pip install -r requirements.txt
 #    (Shell alternative:
 #    export JWT_SECRET_KEY="$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")")
 
-# 3b. Migrations run automatically at startup; to run them manually first:
-#     python -c "from alembic import command; from alembic.config import Config; \
-#     c=Config(); c.set_main_option('script_location','alembic'); \
-#     c.set_main_option('sqlalchemy.url', '$DATABASE_URL'); command.upgrade(c,'head')"
+# 3b. Apply migrations
+#     alembic upgrade head
+#     (the container retries automatically against a not-yet-ready database)
 
 # 4. (Optional) seed a demo admin + catalogue
 python -m app.seed
@@ -109,6 +111,14 @@ Open the interactive docs at **http://127.0.0.1:8000/docs**.
 ### Run with Docker
 
 ```bash
+docker compose up                # app only (uses DATABASE_URL from .env, e.g. Neon)
+docker compose --profile local up   # app + local PostgreSQL (drops into the db service)
+```
+
+Or build and run manually:
+
+```bash
+alembic upgrade head             # run migrations first
 docker build -t ecommerce-api .
 docker run -p 8000:8000 -e JWT_SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')" ecommerce-api
 ```
@@ -172,7 +182,7 @@ this repository** (see *Run the tests*):
 | DELETE | `/api/categories/{id}`           | admin | Delete category (409 if it has products)          |
 | GET    | `/api/products/`                 | –     | List products (`category_id`, `search`, `min_price`, `max_price`, `skip`, `limit`) |
 | POST   | `/api/products/`                 | admin | Create product                                    |
-| GET    | `/api/products/{id}`             | –     | Product detail + `average_rating`, `review_count`, `reviews` |
+| GET    | `/api/products/{id}`             | –     | Product detail + `average_rating`, `review_count`, `reviews` (5 most recent) |
 | PATCH  | `/api/products/{id}`             | admin | Update product                                    |
 | DELETE | `/api/products/{id}`             | admin | Delete product                                    |
 
@@ -180,7 +190,7 @@ this repository** (see *Run the tests*):
 
 | Method | Endpoint                  | Auth  | Description                                      |
 |--------|---------------------------|-------|--------------------------------------------------|
-| POST   | `/api/orders/`                | user  | Place an order (items with `product_id` + `quantity`) |
+| POST   | `/api/orders/`                | user  | Place an order (items with `product_id` + `quantity`). Pass an `Idempotency-Key` header to make replays safe (double-click/retry reuse the original order) |
 | GET    | `/api/orders/`                | user  | Own orders (admin: all orders)                   |
 | GET    | `/api/orders/{id}`            | user  | Own order (admin: any; others get 404)           |
 | PATCH  | `/api/orders/{id}/status`     | admin | Set status: `pending/paid/shipped/delivered/cancelled` |
@@ -245,13 +255,21 @@ curl -s -X PATCH $BASE/api/orders/1/status \
   line is invalid, the whole request returns `400` and **no** product is
   decremented. Writes happen in a single transaction; `SELECT … FOR UPDATE`
   locks rows on Postgres for safe concurrent checkout.
+- **Idempotent checkout.** Send the same `Idempotency-Key` header with an
+  order to make a retried or double-submitted request reuse the original
+  order (200) instead of placing a duplicate or charging again. Keys are
+  scoped per user; a unique `(user_id, idempotency_key)` constraint backstops
+  concurrent double-submits.
 - **Price snapshotting.** `OrderItem.price_at_purchase` records the price at
   order time; later price changes never rewrite historical orders.
 - **One review per user per product** is enforced as a DB
   `UNIQUE(user_id, product_id)` constraint *and* surfaced as a friendly `409`
-  in the API.
+  in the API. Product detail returns the product's `average_rating`,
+  `review_count` (the full set) and the **5 most recent** reviews.
 - **Ownership.** Users see only their own orders (others get `404`). Users may
   update/delete only their own reviews; admins can delete any review.
+- **Timezone-aware timestamps.** All `created_at` values are stored and served
+  as `timestamptz` (UTC), so clients always receive an explicit offset.
 
 ## 🗄️ Database & Migrations
 
@@ -262,21 +280,27 @@ The app is Postgres-only: `DATABASE_URL` is read once at startup. A plain
 ```bash
 export DATABASE_URL="postgresql://shop:secret@localhost:5432/shop"
 export JWT_SECRET_KEY="$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")"
+alembic upgrade head             # create/update the schema
 uvicorn app.main:app
 ```
 
-Schema changes live in `alembic/versions/`. The app applies them on startup
-(and `app/seed.py` runs them too). To autogenerate a new revision:
+Schema changes live in `alembic/versions/` and are applied with the Alembic CLI
+(`alembic.ini` points `script_location` at `alembic/`, and `alembic/env.py`
+reads the URL from the app settings). When running `docker compose`, the api
+container retries `alembic upgrade head` until the database is ready, then
+starts uvicorn. To autogenerate a new revision after editing a model:
 
 ```bash
-python -c "from alembic import command; from alembic.config import Config; \
-c=Config(); c.set_main_option('script_location','alembic'); \
-c.set_main_option('sqlalchemy.url', '$DATABASE_URL'); \
-command.revision(c,'describe change',autogenerate=True)"
+alembic revision --autogenerate -m "describe change"
+alembic upgrade head
 ```
 
-On a fresh database the initial migration creates all tables on first boot, so
-deploys self-configure with no extra step. Later boots are idempotent no-ops.
+Use `--profile local` to bring up a bundled Postgres 16 alongside the app; the
+container credentials are `ecom`/`ecom`/`ecom` on `localhost:5432`, so point
+`DATABASE_URL` at `postgresql://ecom:ecom@localhost:5432/ecom` for that mode.
+
+The initial migration `0001_create_ecommerce_tables.py` creates the whole
+schema on a fresh database.
 
 ### Deploying to Vercel (serverless)
 
@@ -286,8 +310,9 @@ Set these in **Project → Settings → Environment Variables**, then redeploy:
   print(secrets.token_urlsafe(48))"`)
 - `DATABASE_URL` — a managed Postgres URL, e.g.
   `postgresql://user:pass@host:5432/shop`
-  (`psycopg2-binary` is already in `requirements.txt`; Alembic migrations run
-  automatically at startup, creating the tables on the first cold start)
+  (`psycopg2-binary` is already in `requirements.txt`). Run `alembic upgrade
+  head` against the database (from any machine, once) so the tables exist
+  before the first cold start; the serverless runtime does not run migrations.
 
 Notes: empty-string env values are treated as unset (Vercel injects `""`
 for blank variables); `ACCESS_TOKEN_EXPIRE_MINUTES` must be an integer ≥ 1.

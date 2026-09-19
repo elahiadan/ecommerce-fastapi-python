@@ -24,7 +24,7 @@ class Product(Base):
         ForeignKey("categories.id"), index=True, nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
     category: Mapped["Category"] = relationship(back_populates="products")
