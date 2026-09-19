@@ -56,7 +56,7 @@ def list_categories(
     skip: int = 0,
     limit: int = 100,
 ) -> list[Category]:
-    return db.query(Category).offset(skip).limit(limit).all()
+    return db.query(Category).order_by(Category.id).offset(skip).limit(limit).all()
 
 
 @router.get(
@@ -87,6 +87,7 @@ def list_category_products(
     return (
         db.query(Product)
         .filter(Product.category_id == category_id)
+        .order_by(Product.id)
         .offset(skip)
         .limit(limit)
         .all()

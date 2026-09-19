@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.database import get_db
 from app.dependencies import require_admin
@@ -65,7 +65,8 @@ def list_products(
         query = query.filter(Product.price >= min_price)
     if max_price is not None:
         query = query.filter(Product.price <= max_price)
-    return query.offset(skip).limit(limit).all()
+    # Deterministic ordering so pagination never duplicates or skips rows.
+    return query.order_by(Product.id).offset(skip).limit(limit).all()
 
 
 @router.get(
@@ -84,6 +85,18 @@ def get_product(product_id: int, db: Session = Depends(get_db)) -> ProductDetail
         .one()
     )
 
+    # Only the most recent reviews are serialized — returning every review
+    # would make the public detail response grow without bound. The count
+    # above still reflects the full set.
+    recent_reviews = (
+        db.query(Review)
+        .options(selectinload(Review.user))
+        .filter(Review.product_id == product_id)
+        .order_by(Review.created_at.desc(), Review.id.desc())
+        .limit(5)
+        .all()
+    )
+
     return ProductDetail(
         id=product.id,
         name=product.name,
@@ -93,7 +106,7 @@ def get_product(product_id: int, db: Session = Depends(get_db)) -> ProductDetail
         image_url=product.image_url,
         category_id=product.category_id,
         created_at=product.created_at,
-        reviews=product.reviews,
+        reviews=recent_reviews,
         average_rating=round(float(avg_rating), 2) if avg_rating is not None else None,
         review_count=int(review_count),
     )

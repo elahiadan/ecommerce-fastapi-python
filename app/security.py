@@ -23,12 +23,18 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 
-def create_access_token(subject: str) -> str:
-    """Encode a JWT containing the subject (user id) and an expiry."""
-    expire = datetime.now(timezone.utc) + timedelta(
-        minutes=settings.access_token_expire_minutes
-    )
-    payload = {"sub": subject, "exp": expire}
+def create_access_token(subject: str, token_version: int = 0) -> str:
+    """Encode a JWT containing the subject (user id), a token version and an
+    expiry. ``tv`` lets us invalidate every previously issued token (e.g. after
+    a password change) by bumping ``User.token_version``."""
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(minutes=settings.access_token_expire_minutes)
+    payload = {
+        "sub": subject,
+        "tv": token_version,
+        "iat": int(now.timestamp()),
+        "exp": int(expire.timestamp()),
+    }
     return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
 
 

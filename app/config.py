@@ -28,7 +28,7 @@ class Settings:
     )
     access_token_expire_minutes: int = field(
         default_factory=lambda: int(
-            os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440")
+            os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60")
         )
     )
 

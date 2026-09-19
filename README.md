@@ -16,7 +16,7 @@ and a real test suite.
 - **Role-based permissions**: 403 for non-admins on write routes; users only
   see their own orders; admins moderate reviews and update order status
 - Switcheable database: SQLite out of the box, Postgres via a `DATABASE_URL` env var
-- ✔ **48 pytest cases** covering auth, permissions, stock validation, and review rules
+- ✔ **Local pytest suite** exercising auth, permissions, stock validation, and review rules (kept out of this repository)
 
 ## 🛠 Tech Stack
 
@@ -28,7 +28,7 @@ and a real test suite.
 | Auth         | `python-jose` + `passlib`    | HS256 JWT + bcrypt hashing             |
 | Database     | SQLite (dev)                  | swap to Postgres via `DATABASE_URL`    |
 | Server       | Uvicorn                       | `uvicorn app.main:app --reload`        |
-| Testing      | pytest + FastAPI TestClient  | in-memory SQLite (`StaticPool`)        |
+| Testing      | pytest + FastAPI TestClient  | local-only suite, in-memory SQLite (`StaticPool`), not shipped |
 | Deploy       | Docker (python:3.12-slim)    | `docker build . && docker run`         |
 
 ## 📂 Project Structure
@@ -63,16 +63,9 @@ and a real test suite.
 │       ├── product.py        # /products
 │       ├── order.py          # /orders
 │       └── review.py         # /reviews
-├── tests/
-│   ├── conftest.py           # isolated in-memory DB + shared fixtures
-│   ├── test_auth.py          # register / login / duplicate email / /me
-│   ├── test_permissions.py   # 401/403 role checks
-│   ├── test_orders.py        # stock validation, atomicity, ownership
-│   └── test_reviews.py       # duplicates, averages, moderation
 ├── requirements.txt          # pinned versions
 ├── Dockerfile
-├── .env.example
-└── pytest.ini
+└── .env.example
 ```
 
 ## 🏃 Setup & Run
@@ -108,23 +101,30 @@ docker run -p 8000:8000 -e SECRET_KEY="$(python3 -c 'import secrets; print(secre
 
 ### Run the tests
 
+The pytest suite is intentionally kept **out of this repository**. If you have a
+local checkout containing `tests/`, just run:
+
 ```bash
 pytest            # or: pytest -v
 ```
 
-## 🧪 Business Rules under Test
+Right after cloning, `pytest` will find no test cases — that is expected.
 
-| Rule                                                        | Test                                                   |
-|-------------------------------------------------------------|--------------------------------------------------------|
-| Duplicate signup email/username rejected                    | `test_auth.py`                                         |
-| Non-admin write routes return `403`                         | `test_permissions.py`                                  |
-| Order succeeds and stock is decremented atomically          | `test_orders.py::test_create_order_success`            |
-| Insufficient stock → `400`, nothing decremented             | `test_orders.py::test_insufficient_stock_rejected`     |
-| One failing line ⇒ *no* partial decrement on other lines    | `test_orders.py::test_no_partial_decrement_*`          |
-| Users only see their own orders; admins see all + set status| `test_orders.py`                                       |
-| Duplicate review → `409`; one review per user/product       | `test_reviews.py::test_duplicate_review_rejected`      |
-| Average rating + review count on product detail             | `test_reviews.py::test_average_rating_and_review_count`|
-| Users delete only own reviews; admins moderate any          | `test_reviews.py`                                      |
+## 🧪 Business Rules
+
+The rules below are exercised by a **local pytest suite that is not included in
+this repository** (see *Run the tests*):
+
+- Duplicate signup email/username rejected with a single generic `409`
+- Non-admin write routes return `403`
+- Order succeeds and stock is decremented atomically
+- Insufficient stock → `400`, nothing decremented
+- One failing line ⇒ *no* partial decrement on other lines
+- Invalid order-status transitions → `409`; cancelling restores stock exactly once
+- Users only see their own orders; admins see all + set status
+- Duplicate review → `409`; one review per user/product
+- Average rating + review count on product detail
+- Users delete only own reviews; admins moderate any
 
 ## 🔌 API Endpoints
 

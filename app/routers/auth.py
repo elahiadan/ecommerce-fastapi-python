@@ -9,11 +9,18 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
+from app.rate_limit import rate_limit
 from app.schemas.auth import Token
 from app.schemas.user import UserCreate, UserRead
 from app.security import create_access_token, hash_password, verify_password
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+_register_rate_limit = rate_limit("auth:register", 10, 60)
+_login_rate_limit = rate_limit("auth:login", 20, 60)
+# Pre-computed dummy hash so unknown-account logins still run a full bcrypt
+# verify and respond in (roughly) the same time as a real one.
+_DUMMY_HASH = hash_password("timing-equalization-dummy-password")
 
 
 @router.post(
@@ -22,19 +29,20 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
     status_code=status.HTTP_201_CREATED,
     summary="Create a new user account",
 )
-def register(payload: UserCreate, db: Session = Depends(get_db)) -> User:
+def register(
+    payload: UserCreate,
+    db: Session = Depends(get_db),
+    _limited: None = Depends(_register_rate_limit),
+) -> User:
     exists = db.query(User).filter(
         or_(User.email == payload.email, User.username == payload.username)
     ).first()
     if exists:
-        if exists.email == payload.email:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="An account with this email already exists",
-            )
+        # Single generic message on purpose: distinguishing email from username
+        # would let anyone probe which accounts exist.
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="This username is already taken",
+            detail="An account with this email or username already exists",
         )
 
     user = User(
@@ -49,26 +57,11 @@ def register(payload: UserCreate, db: Session = Depends(get_db)) -> User:
     except IntegrityError:
         # Unique-column backstop for the concurrent-signup race: the
         # pre-checks above both pass, then the second INSERT trips the unique
-        # constraint. Re-query so the friendly 409/username message still wins.
+        # constraint. Same generic 409 keeps the enumeration surface closed.
         db.rollback()
-        existing = (
-            db.query(User)
-            .filter(
-                or_(
-                    User.email == payload.email,
-                    User.username == payload.username,
-                )
-            )
-            .first()
-        )
-        if existing is not None and existing.email == payload.email:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="An account with this email already exists",
-            )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="This username is already taken",
+            detail="An account with this email or username already exists",
         )
     db.refresh(user)
     return user
@@ -82,24 +75,31 @@ def register(payload: UserCreate, db: Session = Depends(get_db)) -> User:
 def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
+    _limited: None = Depends(_login_rate_limit),
 ) -> Token:
     user = db.query(User).filter(
         or_(User.email == form_data.username, User.username == form_data.username)
     ).first()
 
-    if user is None or not verify_password(form_data.password, user.hashed_password):
+    # Always run a real bcrypt verify (a dummy hash for unknown accounts) so
+    # response timing does not reveal whether the account exists.
+    password_ok = verify_password(
+        form_data.password,
+        user.hashed_password if user is not None else _DUMMY_HASH,
+    )
+    if user is None or not password_ok or not user.is_active:
+        # One generic error for missing/invalid/deactivated accounts.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email/username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="This account has been deactivated",
-        )
 
-    return Token(access_token=create_access_token(subject=str(user.id)))
+    return Token(
+        access_token=create_access_token(
+            subject=str(user.id), token_version=user.token_version
+        )
+    )
 
 
 @router.get(

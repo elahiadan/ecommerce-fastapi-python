@@ -3,12 +3,17 @@
 Key business rule: when placing an order every line item is validated against
 available stock BEFORE any quantity is decremented. If any line exceeds stock
 the whole request is rejected and nothing is mutated (no partial decrements).
+
+Decrements are performed with an atomic conditional ``UPDATE ... WHERE
+stock >= quantity`` — on Postgres and SQLite alike — so a concurrent order can
+never oversell the same stock between the check and the write.
 """
 
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy import update as sa_update
+from sqlalchemy.orm import Session, selectinload
 
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin
@@ -18,6 +23,28 @@ from app.models.user import User
 from app.schemas.order import OrderCreate, OrderRead, OrderStatusUpdate
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
+
+# Valid lifecycle transitions. DELIVERED and CANCELLED are terminal: a
+# cancelled order's stock is restored exactly once, so it must never leave
+# that state again (which would allow double-restocking).
+_ALLOWED_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
+    OrderStatus.PENDING: {OrderStatus.PAID, OrderStatus.CANCELLED},
+    OrderStatus.PAID: {OrderStatus.SHIPPED, OrderStatus.CANCELLED},
+    OrderStatus.SHIPPED: {OrderStatus.DELIVERED},
+    OrderStatus.DELIVERED: set(),
+    OrderStatus.CANCELLED: set(),
+}
+
+
+def _get_order_with_items(db: Session, order_id: int) -> Order | None:
+    """Load an order with its line items and products eager-loaded so response
+    serialization never triggers an N+1 of lazy queries."""
+    return (
+        db.query(Order)
+        .options(selectinload(Order.items).selectinload(OrderItem.product))
+        .filter(Order.id == order_id)
+        .first()
+    )
 
 
 @router.post(
@@ -38,11 +65,14 @@ def create_order(
         requested[item.product_id] = requested.get(item.product_id, 0) + item.quantity
 
     if not requested:
-        raise HTTPException(status_code=400, detail="Order must contain at least one item")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Order must contain at least one item",
+        )
 
     product_ids = list(requested.keys())
-    # FOR UPDATE locks the rows on Postgres (ignored by SQLite) so concurrent
-    # check-then-decrement stays safe; everything happens in one transaction.
+    # FOR UPDATE locks the rows on Postgres so concurrent check-then-decrement
+    # stays serialized; everything happens in one transaction.
     products = (
         db.query(Product)
         .filter(Product.id.in_(product_ids))
@@ -51,7 +81,7 @@ def create_order(
     )
     product_map: dict[int, Product] = {p.id: p for p in products}
 
-    # --- Phase 1: validate every line BEFORE touching any data ------------
+    # --- Phase 1: friendly validation before touching any data -------------
     for product_id, quantity in requested.items():
         product = product_map.get(product_id)
         if product is None:
@@ -68,7 +98,7 @@ def create_order(
                 ),
             )
 
-    # --- Phase 2: create order + items, decrement stock, all in one commit ----
+    # --- Phase 2: create order + items, decrement stock, all in one commit ---
     order = Order(user_id=current_user.id)
     db.add(order)
     db.flush()  # obtain order.id
@@ -76,7 +106,20 @@ def create_order(
     total = Decimal("0.00")
     for product_id, quantity in requested.items():
         product = product_map[product_id]
-        product.stock -= quantity
+        # Atomic conditional decrement: if the row no longer has enough stock
+        # (concurrent order), zero rows match and we reject — no partial writes.
+        result = db.execute(
+            sa_update(Product)
+            .where(Product.id == product_id, Product.stock >= quantity)
+            .values(stock=Product.stock - quantity)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Insufficient stock for '{product.name}': requested {quantity}",
+            )
         total += Decimal(quantity) * product.price
         db.add(
             OrderItem(
@@ -89,8 +132,7 @@ def create_order(
 
     order.total_amount = total
     db.commit()
-    db.refresh(order)
-    return order
+    return _get_order_with_items(db, order.id)
 
 
 @router.get(
@@ -104,10 +146,13 @@ def list_orders(
     skip: int = 0,
     limit: int = 100,
 ):
-    query = db.query(Order)
+    query = db.query(Order).options(
+        selectinload(Order.items).selectinload(OrderItem.product)
+    )
     if not current_user.is_admin:
         query = query.filter(Order.user_id == current_user.id)
-    return query.offset(skip).limit(limit).all()
+    # Deterministic ordering so pagination never duplicates or skips rows.
+    return query.order_by(Order.id.desc()).offset(skip).limit(limit).all()
 
 
 @router.get(
@@ -120,7 +165,7 @@ def get_order(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Order:
-    order = db.get(Order, order_id)
+    order = _get_order_with_items(db, order_id)
     if order is None or (order.user_id != current_user.id and not current_user.is_admin):
         # 404 (rather than 403) so we don't leak whether an order exists.
         raise HTTPException(status_code=404, detail="Order not found")
@@ -130,7 +175,7 @@ def get_order(
 @router.patch(
     "/{order_id}/status",
     response_model=OrderRead,
-    summary="Update an order's status (admin only)",
+    summary="Update an order's status (admin only, lifecycle-validated)",
 )
 def update_order_status(
     order_id: int,
@@ -138,10 +183,36 @@ def update_order_status(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> Order:
-    order = db.get(Order, order_id)
+    order = _get_order_with_items(db, order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
-    order.status = payload.status
+
+    new_status = payload.status
+    if new_status == order.status:
+        return order  # idempotent no-op
+
+    allowed = _ALLOWED_TRANSITIONS[order.status]
+    if new_status not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Cannot change order status from '{order.status.value}' to "
+                f"'{new_status.value}'. Allowed transitions: "
+                f"{', '.join(sorted(s.value for s in allowed)) or 'none'}"
+            ),
+        )
+
+    if new_status == OrderStatus.CANCELLED:
+        # Restock every line atomically. CANCELLED is terminal, so this runs
+        # exactly once (a later status change is rejected above).
+        for item in order.items:
+            db.execute(
+                sa_update(Product)
+                .where(Product.id == item.product_id)
+                .values(stock=Product.stock + item.quantity)
+                .execution_options(synchronize_session=False)
+            )
+
+    order.status = new_status
     db.commit()
-    db.refresh(order)
-    return order
+    return _get_order_with_items(db, order.id)

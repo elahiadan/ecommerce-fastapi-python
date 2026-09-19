@@ -34,6 +34,14 @@ def get_current_user(
     user = db.get(User, user_id)
     if user is None or not user.is_active:
         raise _credentials_exception()
+    try:
+        token_version = int(payload.get("tv", 0))
+    except (TypeError, ValueError):
+        raise _credentials_exception()
+    if token_version != user.token_version:
+        # The token was issued before the account's token_version was bumped
+        # (e.g. after a password change) — treat it as invalid.
+        raise _credentials_exception()
     return user
 
 
