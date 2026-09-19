@@ -1,6 +1,6 @@
 """Category endpoints. Reads are public; writes are admin-only."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -53,8 +53,8 @@ def create_category(
 )
 def list_categories(
     db: Session = Depends(get_db),
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=200),
 ) -> list[Category]:
     return db.query(Category).order_by(Category.id).offset(skip).limit(limit).all()
 
@@ -79,8 +79,8 @@ def get_category(category_id: int, db: Session = Depends(get_db)) -> Category:
 def list_category_products(
     category_id: int,
     db: Session = Depends(get_db),
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=200),
 ) -> list[Product]:
     if db.get(Category, category_id) is None:
         raise HTTPException(status_code=404, detail="Category not found")
@@ -144,7 +144,9 @@ def delete_category(
     category = db.get(Category, category_id)
     if category is None:
         raise HTTPException(status_code=404, detail="Category not found")
-    if category.products:
+    # Existence check only: loading the full products collection here would
+    # materialize every row of a large catalogue for a boolean question.
+    if db.query(Product.id).filter(Product.category_id == category_id).first():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cannot delete a category that still contains products",

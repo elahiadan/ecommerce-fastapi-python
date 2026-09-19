@@ -1,6 +1,6 @@
 """User admin endpoints: list and inspect users."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -19,8 +19,8 @@ router = APIRouter(prefix="/users", tags=["Users"])
 def list_users(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=200),
 ) -> list[User]:
     return db.query(User).order_by(User.id).offset(skip).limit(limit).all()
 

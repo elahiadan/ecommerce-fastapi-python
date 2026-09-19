@@ -1,5 +1,4 @@
-"""Route registration package."""
+"""HTTP routers, one module per resource.
 
-from app.routers import auth, category, order, product, review, user
-
-__all__ = ["auth", "category", "order", "product", "review", "user"]
+Register them in ``app.main`` (``from app.routers import auth, ...``).
+"""

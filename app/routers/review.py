@@ -8,7 +8,7 @@ Rules:
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.database import get_db
 from app.dependencies import get_current_user
@@ -79,10 +79,17 @@ def list_reviews(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[Review]:
-    query = db.query(Review)
+    query = db.query(Review).options(selectinload(Review.user))
     if product_id is not None:
         query = query.filter(Review.product_id == product_id)
-    return query.order_by(Review.created_at.desc()).offset(skip).limit(limit).all()
+    # Eager-load the author (ReviewRead embeds user) to avoid an N+1 of lazy
+    # queries; id tiebreaker keeps pagination stable under timestamp ties.
+    return (
+        query.order_by(Review.created_at.desc(), Review.id.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
 
 
 @router.patch(

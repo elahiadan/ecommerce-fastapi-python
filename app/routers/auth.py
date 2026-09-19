@@ -1,23 +1,55 @@
 """Authentication endpoints: register, login (OAuth2 password flow), /me."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
 from app.rate_limit import rate_limit
 from app.schemas.auth import Token
-from app.schemas.user import UserCreate, UserRead
+from app.schemas.user import PasswordChange, UserCreate, UserRead
 from app.security import create_access_token, hash_password, verify_password
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-_register_rate_limit = rate_limit("auth:register", 10, 60)
-_login_rate_limit = rate_limit("auth:login", 20, 60)
+
+async def _login_rate_key(request: Request) -> str:
+    """Per-account bucket component. rate_limit() already prefixes every key
+    with the client identity, so this returns only the account name: distinct
+    accounts never share a bucket (a spray run cannot lock out unrelated
+    users), while brute force against one account aggregates per account."""
+    try:
+        form = await request.form()
+        username = form.get("username")
+    except Exception:
+        username = None
+    account = (
+        username.strip().lower()
+        if isinstance(username, str) and username.strip()
+        else "unknown"
+    )
+    return account
+
+
+# Limits are env-configurable (LOGIN_/REGISTER_/CHANGE_PASSWORD_RATE_LIMIT_
+# PER_MINUTE); the values below are only the fallbacks, read once at import.
+_register_rate_limit = rate_limit(
+    "auth:register", settings.register_rate_limit_per_minute, 60
+)
+_login_rate_limit = rate_limit(
+    "auth:login",
+    settings.login_rate_limit_per_minute,
+    60,
+    key=_login_rate_key,
+)
+_change_password_rate_limit = rate_limit(
+    "auth:change-password", settings.change_password_rate_limit_per_minute, 60
+)
 # Pre-computed dummy hash so unknown-account logins still run a full bcrypt
 # verify and respond in (roughly) the same time as a real one.
 _DUMMY_HASH = hash_password("timing-equalization-dummy-password")
@@ -109,3 +141,31 @@ def login(
 )
 def read_me(current_user: User = Depends(get_current_user)) -> User:
     return current_user
+
+
+@router.post(
+    "/change-password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Change your password (invalidates all existing tokens)",
+)
+def change_password(
+    payload: PasswordChange,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    _limited: None = Depends(_change_password_rate_limit),
+) -> None:
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+    if payload.new_password == payload.current_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be different from the current password",
+        )
+    current_user.hashed_password = hash_password(payload.new_password)
+    # Bump the token version so every JWT issued before this change stops
+    # validating in get_current_user (the `tv` claim check).
+    current_user.token_version = (current_user.token_version or 0) + 1
+    db.commit()

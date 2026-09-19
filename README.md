@@ -37,7 +37,7 @@ and a real test suite.
 .
 ├── app/
 │   ├── main.py               # FastAPI app, router registration, create_all
-│   ├── config.py             # env-based settings (DATABASE_URL, SECRET_KEY, ...)
+│   ├── config.py             # env-based settings (DATABASE_URL, JWT_SECRET_KEY, ...)
 │   ├── database.py           # engine / session / Base / get_db
 │   ├── security.py           # bcrypt hashing + JWT encode/decode
 │   ├── dependencies.py       # get_current_user, require_admin
@@ -78,9 +78,12 @@ source venv/bin/activate
 # 2. Install pinned dependencies
 pip install -r requirements.txt
 
-# 3. Set a JWT signing key (REQUIRED — the app refuses to boot without it and
-#    rejects the known dev default)
-export SECRET_KEY="$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")"
+# 3. Configure env — copy `.env.example` to `.env` and set JWT_SECRET_KEY (it
+#    is REQUIRED — the app refuses to boot without it and rejects the known
+#    dev default/placeholders). Generate one with:
+#    python -c "import secrets; print(secrets.token_urlsafe(48))"
+#    (Shell alternative:
+#    export JWT_SECRET_KEY="$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")")
 
 # 4. (Optional) seed a demo admin + catalogue
 python -m app.seed
@@ -96,7 +99,7 @@ Open the interactive docs at **http://127.0.0.1:8000/docs**.
 
 ```bash
 docker build -t ecommerce-api .
-docker run -p 8000:8000 -e SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')" ecommerce-api
+docker run -p 8000:8000 -e JWT_SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')" ecommerce-api
 ```
 
 ### Run the tests
@@ -135,6 +138,7 @@ this repository** (see *Run the tests*):
 | POST   | `/auth/register`   | –     | Create an account, returns the user (201)        |
 | POST   | `/auth/login`      | –     | OAuth2 form (`username` + `password`), returns JWT |
 | GET    | `/auth/me`         | user  | Current authenticated user                       |
+| POST   | `/auth/change-password` | user | Change password (`current_password` + `new_password`), invalidates all existing tokens (204) |
 | GET    | `/users/`          | admin | List all users                                   |
 | GET    | `/users/{id}`      | user  | Own profile (admin: anyone)                      |
 
@@ -237,12 +241,32 @@ The app reads `DATABASE_URL` once at startup:
 
 ```bash
 export DATABASE_URL="postgresql+psycopg://shop:secret@localhost:5432/shop"
-export SECRET_KEY="$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")"
+export JWT_SECRET_KEY="$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")"
 uvicorn app.main:app
 ```
 
-`create_all` is used for local dev. For real deployments add
-[Alembic](https://alembic.sqlalchemy.org/) migrations.
+`create_all` runs at startup only for SQLite dev (or when
+`AUTO_CREATE_TABLES=1`). For real deployments add
+[Alembic](https://alembic.sqlalchemy.org/) migrations and leave table
+creation off.
+
+### Deploying to Vercel (serverless)
+
+SQLite does not work there — the filesystem is read-only (except `/tmp`)
+and ephemeral per instance — so the app refuses to boot with a SQLite URL
+when the `VERCEL` env var is present. Set these in
+**Project → Settings → Environment Variables**, then redeploy:
+
+- `JWT_SECRET_KEY` — required (generate: `python -c "import secrets;
+  print(secrets.token_urlsafe(48))"`)
+- `DATABASE_URL` — a managed Postgres URL, e.g.
+  `postgresql+psycopg://user:pass@host:5432/shop`
+  (add a `psycopg` driver dependency for Postgres)
+
+Notes: empty-string env values are treated as unset (Vercel injects `""`
+for blank variables); `ACCESS_TOKEN_EXPIRE_MINUTES` must be an integer ≥ 1.
+The in-process auth rate limiter is per-instance on serverless — also enable
+Vercel's platform rate limiting / firewall for the `/auth/*` routes.
 
 ## 🔐 Pinned Dependency Notes
 

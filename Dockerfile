@@ -11,8 +11,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY ./app ./app
 
-# SECRET_KEY must be provided at runtime (e.g. -e SECRET_KEY=...) — the app
-# refuses to boot without it. DATABASE_URL can be set the same way.
+# JWT_SECRET_KEY must be provided at runtime (e.g. -e JWT_SECRET_KEY=...) —
+# the app refuses to boot without it. DATABASE_URL can be set the same way.
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

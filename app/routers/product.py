@@ -1,6 +1,10 @@
 """Product endpoints. Reads are public; writes are admin-only."""
 
+import math
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BeforeValidator
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
@@ -19,6 +23,30 @@ from app.schemas.product import (
 )
 
 router = APIRouter(prefix="/products", tags=["Products"])
+
+
+def _escape_like(term: str) -> str:
+    """Escape LIKE metacharacters so `search` matches literally.
+
+    Without this, a search for "%" returns the whole catalogue and "_" acts
+    as a single-character wildcard (with subtly different escaping rules on
+    SQLite vs Postgres).
+    """
+    return (
+        term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+
+
+def _finite_or_none(value: float | None) -> float | None:
+    # NaN/Infinity would otherwise reach the Numeric comparison, where the
+    # Postgres driver raises instead of filtering (SQLite silently returns
+    # nothing). Validate at the boundary so the client gets a 422, not a 500.
+    if value is not None and not math.isfinite(value):
+        raise ValueError("must be a finite number")
+    return value
+
+
+FiniteFloat = Annotated[float | None, BeforeValidator(_finite_or_none)]
 
 
 @router.post(
@@ -51,8 +79,8 @@ def list_products(
     db: Session = Depends(get_db),
     category_id: int | None = Query(default=None),
     search: str | None = Query(default=None, description="Match product name"),
-    min_price: float | None = Query(default=None),
-    max_price: float | None = Query(default=None),
+    min_price: FiniteFloat = Query(default=None, ge=0),
+    max_price: FiniteFloat = Query(default=None, ge=0),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[Product]:
@@ -60,7 +88,9 @@ def list_products(
     if category_id is not None:
         query = query.filter(Product.category_id == category_id)
     if search:
-        query = query.filter(Product.name.ilike(f"%{search}%"))
+        query = query.filter(
+            Product.name.ilike(f"%{_escape_like(search)}%", escape="\\")
+        )
     if min_price is not None:
         query = query.filter(Product.price >= min_price)
     if max_price is not None:
@@ -97,19 +127,15 @@ def get_product(product_id: int, db: Session = Depends(get_db)) -> ProductDetail
         .all()
     )
 
-    return ProductDetail(
-        id=product.id,
-        name=product.name,
-        description=product.description,
-        price=product.price,
-        stock=product.stock,
-        image_url=product.image_url,
-        category_id=product.category_id,
-        created_at=product.created_at,
-        reviews=recent_reviews,
-        average_rating=round(float(avg_rating), 2) if avg_rating is not None else None,
-        review_count=int(review_count),
+    # Attach the computed aggregates to the ORM instance so the response can
+    # be built from the model directly instead of re-listing every Product
+    # field in the constructor (which would drift when Product changes).
+    product.average_rating = (
+        round(float(avg_rating), 2) if avg_rating is not None else None
     )
+    product.review_count = int(review_count)
+    product.reviews = recent_reviews
+    return ProductDetail.model_validate(product)
 
 
 @router.patch(

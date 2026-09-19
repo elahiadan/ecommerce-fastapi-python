@@ -6,9 +6,15 @@ One review per (user, product) pair is enforced both at the database level
 
 from datetime import datetime, timezone
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import UniqueConstraint
 
 from app.database import Base
 

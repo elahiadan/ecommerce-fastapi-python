@@ -11,7 +11,7 @@ never oversell the same stock between the check and the write.
 
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session, selectinload
 
@@ -36,15 +36,21 @@ _ALLOWED_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
 }
 
 
-def _get_order_with_items(db: Session, order_id: int) -> Order | None:
+def _get_order_with_items(
+    db: Session, order_id: int, *, for_update: bool = False
+) -> Order | None:
     """Load an order with its line items and products eager-loaded so response
-    serialization never triggers an N+1 of lazy queries."""
-    return (
+    serialization never triggers an N+1 of lazy queries. Pass for_update=True
+    when the caller is about to change the row, so concurrent status updates
+    stay serialized (Postgres; ignored on SQLite)."""
+    query = (
         db.query(Order)
         .options(selectinload(Order.items).selectinload(OrderItem.product))
         .filter(Order.id == order_id)
-        .first()
     )
+    if for_update:
+        query = query.with_for_update()
+    return query.first()
 
 
 @router.post(
@@ -143,8 +149,8 @@ def create_order(
 def list_orders(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=200),
 ):
     query = db.query(Order).options(
         selectinload(Order.items).selectinload(OrderItem.product)
@@ -183,7 +189,10 @@ def update_order_status(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> Order:
-    order = _get_order_with_items(db, order_id)
+    # Lock the row: without this, two concurrent cancels both read a
+    # cancellable status, both pass the transition check, and stock is
+    # restored twice (CANCELLED-is-terminal is otherwise only a Python check).
+    order = _get_order_with_items(db, order_id, for_update=True)
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
 
@@ -206,13 +215,39 @@ def update_order_status(
         # Restock every line atomically. CANCELLED is terminal, so this runs
         # exactly once (a later status change is rejected above).
         for item in order.items:
-            db.execute(
+            result = db.execute(
                 sa_update(Product)
                 .where(Product.id == item.product_id)
                 .values(stock=Product.stock + item.quantity)
                 .execution_options(synchronize_session=False)
             )
+            if result.rowcount != 1:
+                db.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Cannot cancel order: product {item.product_id} is no "
+                        "longer available"
+                    ),
+                )
 
-    order.status = new_status
+    # Serialize the transition in the database on every backend: the UPDATE
+    # only matches a row that is still in the status we read, so a concurrent
+    # request that already moved this order wins and this one is rejected with
+    # a clean 409 instead of restocking twice (this is the SQLite-safe
+    # counterpart to SELECT ... FOR UPDATE, which SQLite ignores).
+    transition = db.execute(
+        sa_update(Order)
+        .where(Order.id == order.id, Order.status == order.status)
+        .values(status=new_status)
+        .execution_options(synchronize_session=False)
+    )
+    if transition.rowcount != 1:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Order status changed concurrently; please retry",
+        )
+
     db.commit()
     return _get_order_with_items(db, order.id)
