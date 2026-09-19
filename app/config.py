@@ -56,7 +56,14 @@ def _default_auto_create_tables() -> bool:
     explicit = _getenv("AUTO_CREATE_TABLES", "")
     if explicit:
         return explicit.lower() in ("1", "true", "yes")
-    return _getenv("DATABASE_URL", _SQLITE_DEFAULT).startswith("sqlite")
+    # Default to creating tables on startup for every database (SQLite dev and
+    # managed Postgres/Neon alike), so a fresh database "just works" with no
+    # .env changes. Serverless (Vercel) is the exception: static-filesystem
+    # and multi-instance concerns make runtime DDL inappropriate, so there it
+    # stays opt-in via AUTO_CREATE_TABLES=1/true.
+    if os.getenv("VERCEL"):
+        return False
+    return True
 
 
 def _getenv(name: str, default: str) -> str:
@@ -153,9 +160,11 @@ class Settings:
             "CHANGE_PASSWORD_RATE_LIMIT_PER_MINUTE", 10, minimum=1
         )
     )
-    # Local SQLite dev keeps the zero-setup create_all behaviour. Any other
-    # database (e.g. managed Postgres on Vercel) must be migrated explicitly
-    # (Alembic); the app never runs DDL against it at runtime by default.
+    # Zero-setup behaviour: tables are created on startup for any database
+    # (SQLite and Postgres/Neon) unless EXPLICITLY disabled with
+    # AUTO_CREATE_TABLES=0/false, or when running on Vercel (serverless),
+    # where DDL at runtime is disabled unless AUTO_CREATE_TABLES=1/true.
+    # Production teams that manage schema with Alembic can disable it here.
     auto_create_tables: bool = field(
         default_factory=_default_auto_create_tables
     )
@@ -176,7 +185,7 @@ class Settings:
                 "SQLite cannot be used on Vercel (read-only, ephemeral "
                 "filesystem). Set DATABASE_URL to a managed Postgres "
                 "database, e.g. "
-                "DATABASE_URL=postgresql+psycopg://user:pass@host:5432/shop"
+                "DATABASE_URL=postgresql://user:pass@host:5432/shop"
             )
 
 

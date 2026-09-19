@@ -26,7 +26,7 @@ and a real test suite.
 | ORM          | SQLAlchemy `2.0.35`          | `Mapped`/`mapped_column` typing        |
 | Validation   | Pydantic `2.9.2`             | request/response schemas               |
 | Auth         | `python-jose` + `passlib`    | HS256 JWT + bcrypt hashing             |
-| Database     | SQLite (dev)                  | swap to Postgres via `DATABASE_URL`    |
+| Database     | SQLite (dev) / Postgres        | Postgres via `DATABASE_URL` + bundled `psycopg2-binary` driver |
 | Server       | Uvicorn                       | `uvicorn app.main:app --reload`        |
 | Testing      | pytest + FastAPI TestClient  | local-only suite, in-memory SQLite (`StaticPool`), not shipped |
 | Deploy       | Docker (python:3.12-slim)    | `docker build . && docker run`         |
@@ -242,18 +242,20 @@ curl -s -X PATCH $BASE/api/orders/1/status \
 
 ## 🗄️ Swapping SQLite → Postgres
 
-The app reads `DATABASE_URL` once at startup:
+The app reads `DATABASE_URL` once at startup. A plain `postgresql://` URL uses
+the bundled `psycopg2-binary` driver (already in `requirements.txt`), so
+switching is just a matter of setting the variable:
 
 ```bash
-export DATABASE_URL="postgresql+psycopg://shop:secret@localhost:5432/shop"
+export DATABASE_URL="postgresql://shop:secret@localhost:5432/shop"
 export JWT_SECRET_KEY="$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")"
 uvicorn app.main:app
 ```
 
-`create_all` runs at startup only for SQLite dev (or when
-`AUTO_CREATE_TABLES=1`). For real deployments add
-[Alembic](https://alembic.sqlalchemy.org/) migrations and leave table
-creation off.
+`create_all` runs at startup for any database by default (SQLite or Postgres),
+so a fresh database works with zero setup. Disable it with
+`AUTO_CREATE_TABLES=false` when you manage schema with
+[Alembic](https://alembic.sqlalchemy.org/) migrations.
 
 ### Deploying to Vercel (serverless)
 
@@ -265,8 +267,10 @@ when the `VERCEL` env var is present. Set these in
 - `JWT_SECRET_KEY` — required (generate: `python -c "import secrets;
   print(secrets.token_urlsafe(48))"`)
 - `DATABASE_URL` — a managed Postgres URL, e.g.
-  `postgresql+psycopg://user:pass@host:5432/shop`
-  (add a `psycopg` driver dependency for Postgres)
+  `postgresql://user:pass@host:5432/shop`
+  (`psycopg2-binary` is already in `requirements.txt`; on Vercel set
+  `AUTO_CREATE_TABLES=true` to have the tables created at startup, or run
+  migrations first)
 
 Notes: empty-string env values are treated as unset (Vercel injects `""`
 for blank variables); `ACCESS_TOKEN_EXPIRE_MINUTES` must be an integer ≥ 1.
@@ -280,3 +284,6 @@ Vercel's platform rate limiting / firewall for the `/api/auth/*` routes.
   `AttributeError` at hashing time.
 - `python-multipart` is required by FastAPI's `OAuth2PasswordRequestForm`.
 - `email-validator` powers Pydantic's `EmailStr`.
+- `psycopg2-binary` is pinned because `postgresql://` URLs (as documented in
+  `.env.example`) resolve to the psycopg2 dialect in SQLAlchemy; the binary
+  wheel bundles libpq so no system Postgres client is required.

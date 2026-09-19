@@ -4,6 +4,9 @@ uvicorn[standard]==0.30.6
 
 # --- Database / ORM ---
 SQLAlchemy==2.0.35
+# Postgres driver. `postgresql://` URLs (as in .env) default to psycopg2 in
+# SQLAlchemy; psycopg2-binary bundles libpq so no system dependency is needed.
+psycopg2-binary==2.9.10
 
 # --- Validation ---
 pydantic==2.9.2
