@@ -8,7 +8,7 @@ SQLAlchemy==2.0.35
 # SQLAlchemy; psycopg2-binary bundles libpq so no system dependency is needed.
 psycopg2-binary==2.9.10
 # Schema migrations (see alembic/). Apply with `alembic upgrade head`.
-alembic==1.13.4
+alembic==1.13.2
 
 # --- Validation ---
 pydantic==2.9.2
